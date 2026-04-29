@@ -238,12 +238,25 @@ namespace Bonus_Only_Businesses
             [HarmonyPostfix]
             public static void Postfix(GameState __instance)
             {
-                MelonLoader.MelonLogger.Msg("Regional Mandate: Removing wrong Business...");
+                // Get the value chosen by the player in the settings
+                int targetCount = PlayerPrefs.GetInt("mod.regional_mandate.bonus_count", 3);
+                MelonLoader.MelonLogger.Msg($"Regional Mandate: Enforcing limit of {targetCount} bonuses and removing wrong businesses...");
 
                 foreach (City city in __instance.cities)
                 {
-                    // The game just finished generating the world. 
-                    // We check every building and delete those without a matching bonus.
+                    // 1. TRIM EXTRA BONUSES
+                    // If the game added a "Starting City" bonus behind our backs, delete the extra ones.
+                    if (city.bonuses.Count > targetCount)
+                    {
+                        int removedBonusCount = city.bonuses.Count - targetCount;
+                        // Remove from the end of the list until we hit the target
+                        city.bonuses.RemoveRange(targetCount, removedBonusCount);
+                        MelonLoader.MelonLogger.Msg($"City {city.name}: Trimmed {removedBonusCount} extra hardcoded bonuses.");
+                    }
+
+                    // 2. CLEAN ILLEGAL BUILDINGS
+                    // We do this AFTER trimming so that buildings belonging to the trimmed 
+                    // bonuses are also removed.
                     int count = city.buildings.RemoveAll(b =>
                         b.type >= 1 && b.type <= 21 && !city.bonuses.Contains(GetGoodFromID(b.type))
                     );
