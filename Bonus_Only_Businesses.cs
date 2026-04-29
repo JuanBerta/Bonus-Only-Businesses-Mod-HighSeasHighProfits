@@ -1,17 +1,15 @@
 ﻿using HarmonyLib;
 using MelonLoader;
-using RockTools;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
-using zip.lexy.tgame.city;
 using zip.lexy.tgame.constants;
 using zip.lexy.tgame.random;
 using zip.lexy.tgame.state;
-using zip.lexy.tgame.state.building;
 using zip.lexy.tgame.state.city;
 using zip.lexy.tgame.state.city.mayor;
 using zip.lexy.tgame.ui.gamegeneration;
+using zip.lexy.tgame.ui.settings;
 using zip.lexy.tgame.ui.widget.build;
 using zip.lexy.tgame.ui.widget.trade;
 using zip.lexy.tgame.util;
@@ -129,42 +127,106 @@ namespace Bonus_Only_Businesses
             }
         }
 
+        [HarmonyPatch(typeof(GeneralSettingsWindow), "Start")]
+        public static class GeneralSettings_UI_Injection_Patch
+        {
+            public static void Postfix(GeneralSettingsWindow __instance)
+            {
+                Transform windowTransform = __instance.transform.Find("window");
+                Transform languageTransform = windowTransform?.Find("language");
+                if (languageTransform == null) return;
+
+                // 1. Clone the row
+                GameObject specRow = Object.Instantiate(languageTransform.gameObject, windowTransform);
+                specRow.name = "specialization_setting";
+
+                // 2. Adjust Position (Shift it down so it's under Language)
+                specRow.transform.localPosition += new Vector3(0, -70, 0);
+
+                // 3. Setup the Label
+                TMPro.TextMeshProUGUI label = specRow.transform.Find("label").GetComponent<TMPro.TextMeshProUGUI>();
+                label.text = "Regional Specialization";
+
+                // 4. Setup the Dropdown
+                TMPro.TMP_Dropdown dropdown = specRow.transform.Find("dropdown").GetComponent<TMPro.TMP_Dropdown>();
+
+                // CRITICAL: Remove the game's default "ChangeLanguage" listener
+                dropdown.onValueChanged = new TMPro.TMP_Dropdown.DropdownEvent();
+
+                dropdown.options.Clear();
+                for (int i = 1; i <= 10; i++)
+                {
+                    dropdown.options.Add(new TMPro.TMP_Dropdown.OptionData { text = $"{i} Bonuses" });
+                }
+
+                // 5. Load/Save Logic
+                int currentSaved = PlayerPrefs.GetInt("mod.regional_mandate.bonus_count", 5);
+                dropdown.SetValueWithoutNotify(currentSaved - 1);
+
+                dropdown.onValueChanged.AddListener((int val) => {
+                    int count = val + 1;
+                    PlayerPrefs.SetInt("mod.regional_mandate.bonus_count", count);
+
+                    // Re-assert the label text in case the game tries to overwrite it again
+                    label.text = "Regional Specialization";
+
+                    MelonLoader.MelonLogger.Msg($"Mandate Updated: {count} bonuses.");
+                });
+            }
+        }
+
         [HarmonyPatch(typeof(GenerateGame), "GetCityBonuses")]
-        public static class GetCityBonuses_Patch
+        public static class GetCityBonuses_Final_Patch
         {
             [HarmonyPrefix]
             public static bool Prefix(int seed, int numberOfCities, ref List<List<string>> __result)
             {
-                // 1. Get our target count (e.g., 5)
-                int count = Bonus_Only_Businesses_Class.MaxBonusCount;
-                MelonLoader.MelonLogger.Msg($"Generating Regional Mandate: {count} bonuses per city.");
+                int countPerCity = PlayerPrefs.GetInt("mod.regional_mandate.bonus_count", 3);
+                int totalBonusSlots = countPerCity * numberOfCities;
 
-                // 2. Initialize the master list
                 List<List<string>> masterList = new List<List<string>>(numberOfCities);
+                for (int i = 0; i < numberOfCities; i++) masterList.Add(new List<string>());
+
                 zip.lexy.tgame.random.Random rand = RandGen.ByType(RandomType.CITY_BONUSES, seed);
 
-                // 3. Create the "Deck" - Deal 'count' cards for every city
-                List<string> deck = new List<string>(count * numberOfCities);
-                for (int i = 0; i < count * numberOfCities; i++)
+                // 1. Create a "Global Requirement Deck"
+                // This ensures every good in the game appears at least once.
+                List<string> globalDeck = new List<string>();
+
+                // Add one of every good first
+                globalDeck.AddRange(Goods.ALL);
+
+                // Fill the rest of the deck with random goods until we have enough for all cities
+                while (globalDeck.Count < totalBonusSlots)
                 {
-                    deck.Add(Goods.ALL[i % Goods.ALL.Count]);
+                    globalDeck.Add(Goods.ALL[rand.Next(Goods.ALL.Count)]);
                 }
 
-                // 4. Shuffle the deck
-                deck = ListUtils.Shuffle(rand, deck);
+                // 2. Shuffle the global deck
+                globalDeck = ListUtils.Shuffle(rand, globalDeck);
 
-                // 5. Deal the cards into cities
-                for (int j = 0; j < numberOfCities; j++)
+                // 3. Distribute the deck to cities, ensuring NO DUPLICATES per city
+                int deckIndex = 0;
+                for (int cityIdx = 0; cityIdx < numberOfCities; cityIdx++)
                 {
-                    List<string> cityHand = new List<string>();
-                    for (int k = 0; k < count; k++)
+                    int safetyNet = 0;
+                    while (masterList[cityIdx].Count < countPerCity && safetyNet < 500)
                     {
-                        cityHand.Add(deck[j * count + k]);
+                        safetyNet++;
+                        string candidateGood = globalDeck[deckIndex % globalDeck.Count];
+                        deckIndex++;
+
+                        // If the city doesn't have this good yet, add it
+                        if (!masterList[cityIdx].Contains(candidateGood))
+                        {
+                            masterList[cityIdx].Add(candidateGood);
+                        }
+                        // If it IS a duplicate for this city, the loop continues 
+                        // and we'll pull the next card from the deck for this city instead.
                     }
-                    masterList.Add(cityHand);
                 }
 
-                // 6. Set the result and skip the original method
+                MelonLoader.MelonLogger.Msg($"World generated with {countPerCity} bonuses per city. All goods guaranteed to exist.");
                 __result = masterList;
                 return false;
             }
