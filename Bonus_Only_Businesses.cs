@@ -1,4 +1,5 @@
-﻿using HarmonyLib;
+﻿using System;
+using HarmonyLib;
 using MelonLoader;
 using System.Collections.Generic;
 using System.Linq;
@@ -13,6 +14,8 @@ using zip.lexy.tgame.ui.settings;
 using zip.lexy.tgame.ui.widget.build;
 using zip.lexy.tgame.ui.widget.trade;
 using zip.lexy.tgame.util;
+using static MelonLoader.MelonLogger;
+using System.Reflection;
 
 namespace Bonus_Only_Businesses
 {
@@ -96,34 +99,31 @@ namespace Bonus_Only_Businesses
         [HarmonyPatch(typeof(GoalGiver), "ParametrizeNewBusinessGoal")]
         public static class GoalGiver_Parametrize_Patch
         {
-            // We return 'false' to skip the original 30/70 logic entirely
-            public static bool Prefix(MayorGoal goal, Mayor mayor)
+            [HarmonyPostfix]
+            public static void Postfix(MayorGoal goal, Mayor mayor)
             {
-                // 1. Get the list of legal bonuses for this specific city
-                List<string> bonuses = mayor.city.bonuses;
+                // 1. Extract the arguments to see what good was picked
+                var currentArgs = goal.ExtractArgs();
 
-                if (bonuses == null || bonuses.Count == 0)
+                // The key used in args for business goals is usually "type" or "id"
+                // Based on the game's patterns, it's likely "type"
+                if (currentArgs.TryGetValue("type", out string goodId))
                 {
-                    MelonLoader.MelonLogger.Error($"City {mayor.city.name} has no bonuses! Mayor is confused.");
-                    return true; // Fallback to original if something is wrong
+                    // 2. If it's an 'illegal' good (not in bonuses), we fix it
+                    if (!mayor.city.bonuses.Contains(goodId))
+                    {
+                        // Pick a legal specialized good
+                        string legalGood = mayor.city.bonuses[UnityEngine.Random.Range(0, mayor.city.bonuses.Count)];
+
+                        // 3. Re-run the details setter. 
+                        // This will regenerate goal.args and goal.quests correctly for the new good.
+                        Traverse.Create(typeof(GoalGiver))
+                            .Method("AddBusinessGoalDetailsFromType", new object[] { goal, legalGood })
+                            .GetValue();
+
+                        MelonLoader.MelonLogger.Msg($"Mandate: Redirected {mayor.city.name} project from {goodId} to {legalGood}.");
+                    }
                 }
-
-                // 2. Pick a random specialized good (100% chance)
-                // We use the game's seed for consistency, just like the original code did
-                GameState state = InstanceProvider.GetInstance<GameState>();
-                zip.lexy.tgame.random.Random uniqueRandom = RandGen.GetUniqueRandom(RandomType.MAYOR_GOALS, state.seed);
-
-                string goodToBuild = bonuses[uniqueRandom.Next(bonuses.Count)];
-
-                // 3. Manually call the method that sets the goal details
-                // Since we are skipping the original method, we must do this part ourselves
-                Traverse.Create(typeof(GoalGiver))
-                    .Method("AddBusinessGoalDetailsFromType", new object[] { goal, goodToBuild })
-                    .GetValue();
-
-                MelonLoader.MelonLogger.Msg($"Regional Mandate: Mayor of {mayor.city.name} is starting a project for specialized {goodToBuild}.");
-
-                return false; // Skip the original method so it doesn't pick an 'illegal' good
             }
         }
 
@@ -137,7 +137,7 @@ namespace Bonus_Only_Businesses
                 if (languageTransform == null) return;
 
                 // 1. Clone the row
-                GameObject specRow = Object.Instantiate(languageTransform.gameObject, windowTransform);
+                GameObject specRow = UnityEngine.Object.Instantiate(languageTransform.gameObject, windowTransform);
                 specRow.name = "specialization_setting";
 
                 // 2. Adjust Position (Shift it down so it's under Language)
@@ -181,7 +181,7 @@ namespace Bonus_Only_Businesses
             [HarmonyPrefix]
             public static bool Prefix(int seed, int numberOfCities, ref List<List<string>> __result)
             {
-                int countPerCity = PlayerPrefs.GetInt("mod.regional_mandate.bonus_count", 3);
+                int countPerCity = PlayerPrefs.GetInt("mod.regional_mandate.bonus_count", 5);
                 int totalBonusSlots = countPerCity * numberOfCities;
 
                 List<List<string>> masterList = new List<List<string>>(numberOfCities);
@@ -239,7 +239,7 @@ namespace Bonus_Only_Businesses
             public static void Postfix(GameState __instance)
             {
                 // Get the value chosen by the player in the settings
-                int targetCount = PlayerPrefs.GetInt("mod.regional_mandate.bonus_count", 3);
+                int targetCount = PlayerPrefs.GetInt("mod.regional_mandate.bonus_count", 5);
                 MelonLoader.MelonLogger.Msg($"Regional Mandate: Enforcing limit of {targetCount} bonuses and removing wrong businesses...");
 
                 foreach (City city in __instance.cities)
@@ -266,6 +266,51 @@ namespace Bonus_Only_Businesses
                         MelonLoader.MelonLogger.Msg($"Cleaned {count} illegal buildings from {city.name} at world start.");
                     }
                 }
+            }
+        }
+
+        [HarmonyPatch(typeof(GameState), "OnSeasonChangeRequested")]
+        public static class SeasonChange_Cleanup_Patch
+        {
+            public static void Postfix(GameState __instance)
+            {
+                int targetCount = PlayerPrefs.GetInt("mod.regional_mandate.bonus_count", 5);
+
+                foreach (City city in __instance.cities)
+                {
+                    MandateUtils.EnforceCityMandate(city, targetCount);
+                }
+            }
+        }
+
+        public static class MandateUtils
+        {
+            public static void EnforceCityMandate(City city, int targetCount)
+            {
+                // 1. Trim bonuses if the game added hardcoded ones
+                if (city.bonuses.Count > targetCount)
+                {
+                    int removed = city.bonuses.Count - targetCount;
+                    city.bonuses.RemoveRange(targetCount, removed);
+                }
+
+                // 2. Remove buildings that don't produce a bonus good
+                // Note: Ensure your GetGoodFromID mapping is 100% accurate to the Good IDs
+                int removedBuildings = city.buildings.RemoveAll(b =>
+                    b.type >= 1 && b.type <= 21 && !city.bonuses.Contains(GetGoodFromID(b.type))
+                );
+
+                if (removedBuildings > 0)
+                {
+                    MelonLoader.MelonLogger.Msg($"[Mandate] {city.name}: Removed {removedBuildings} illegal buildings.");
+                }
+            }
+
+            // Helper to map building ID to Good string (Update this based on game's actual Goods.ALL list)
+            public static string GetGoodFromID(int id)
+            {
+                if (id < 0 || id >= Goods.ALL.Count) return "";
+                return Goods.ALL[id];
             }
         }
 
