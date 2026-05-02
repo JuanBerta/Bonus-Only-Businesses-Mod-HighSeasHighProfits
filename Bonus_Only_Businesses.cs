@@ -14,14 +14,12 @@ using zip.lexy.tgame.ui.settings;
 using zip.lexy.tgame.ui.widget.build;
 using zip.lexy.tgame.ui.widget.trade;
 using zip.lexy.tgame.util;
-using static MelonLoader.MelonLogger;
 using System.Reflection;
 
 namespace Bonus_Only_Businesses
 {
     public class Bonus_Only_Businesses_Class : MelonMod
     {
-        public static int MaxBonusCount = 5;
 
         [HarmonyPatch(typeof(BuildWindow))]
         public static class UniversalFilterPatch
@@ -90,7 +88,7 @@ namespace Bonus_Only_Businesses
                         string oldGood = goodType;
                         goodType = city.bonuses[index];
 
-                        MelonLoader.MelonLogger.Msg($"Mayor tried to start a project for {oldGood}. I convinced them to build {goodType} instead!");
+                        MelonLogger.Msg($"Mayor tried to start a project for {oldGood}. I convinced them to build {goodType} instead!");
                     }
                 }
             }
@@ -121,7 +119,7 @@ namespace Bonus_Only_Businesses
                             .Method("AddBusinessGoalDetailsFromType", new object[] { goal, legalGood })
                             .GetValue();
 
-                        MelonLoader.MelonLogger.Msg($"Mandate: Redirected {mayor.city.name} project from {goodId} to {legalGood}.");
+                        MelonLogger.Msg($"Mandate: Redirected {mayor.city.name} project from {goodId} to {legalGood}.");
                     }
                 }
             }
@@ -238,44 +236,7 @@ namespace Bonus_Only_Businesses
             [HarmonyPostfix]
             public static void Postfix(GameState __instance)
             {
-                // Get the value chosen by the player in the settings
                 int targetCount = PlayerPrefs.GetInt("mod.regional_mandate.bonus_count", 5);
-                MelonLoader.MelonLogger.Msg($"Regional Mandate: Enforcing limit of {targetCount} bonuses and removing wrong businesses...");
-
-                foreach (City city in __instance.cities)
-                {
-                    // 1. TRIM EXTRA BONUSES
-                    // If the game added a "Starting City" bonus behind our backs, delete the extra ones.
-                    if (city.bonuses.Count > targetCount)
-                    {
-                        int removedBonusCount = city.bonuses.Count - targetCount;
-                        // Remove from the end of the list until we hit the target
-                        city.bonuses.RemoveRange(targetCount, removedBonusCount);
-                        MelonLoader.MelonLogger.Msg($"City {city.name}: Trimmed {removedBonusCount} extra hardcoded bonuses.");
-                    }
-
-                    // 2. CLEAN ILLEGAL BUILDINGS
-                    // We do this AFTER trimming so that buildings belonging to the trimmed 
-                    // bonuses are also removed.
-                    int count = city.buildings.RemoveAll(b =>
-                        b.type >= 1 && b.type <= 21 && !city.bonuses.Contains(GetGoodFromID(b.type))
-                    );
-
-                    if (count > 0)
-                    {
-                        MelonLoader.MelonLogger.Msg($"Cleaned {count} illegal buildings from {city.name} at world start.");
-                    }
-                }
-            }
-        }
-
-        [HarmonyPatch(typeof(GameState), "OnSeasonChangeRequested")]
-        public static class SeasonChange_Cleanup_Patch
-        {
-            public static void Postfix(GameState __instance)
-            {
-                int targetCount = PlayerPrefs.GetInt("mod.regional_mandate.bonus_count", 5);
-
                 foreach (City city in __instance.cities)
                 {
                     MandateUtils.EnforceCityMandate(city, targetCount);
@@ -283,64 +244,75 @@ namespace Bonus_Only_Businesses
             }
         }
 
+        [HarmonyPatch(typeof(GameState), "OnSeasonChangeRequested")]
+        public static class SeasonChange_Cleanup_Patch
+        {
+            [HarmonyPostfix]
+            public static void Postfix(GameState __instance)
+            {
+                int targetCount = PlayerPrefs.GetInt("mod.regional_mandate.bonus_count", 5);
+                foreach (City city in __instance.cities)
+                {
+                    MandateUtils.EnforceCityMandate(city, targetCount);
+                }
+            }
+        }
         public static class MandateUtils
         {
             public static void EnforceCityMandate(City city, int targetCount)
             {
-                // 1. Trim bonuses if the game added hardcoded ones
+                if (city == null) return;
+
+                // 1. TRIM EXTRA BONUSES
+                // This ensures that if the game adds a seasonal bonus or a starting bonus, 
+                // we keep only the amount defined in your settings.
                 if (city.bonuses.Count > targetCount)
                 {
-                    int removed = city.bonuses.Count - targetCount;
-                    city.bonuses.RemoveRange(targetCount, removed);
+                    int removedBonusCount = city.bonuses.Count - targetCount;
+                    city.bonuses.RemoveRange(targetCount, removedBonusCount);
+                    MelonLogger.Msg($"City {city.name}: Trimmed {removedBonusCount} extra bonuses to maintain limit of {targetCount}.");
                 }
 
-                // 2. Remove buildings that don't produce a bonus good
-                // Note: Ensure your GetGoodFromID mapping is 100% accurate to the Good IDs
-                int removedBuildings = city.buildings.RemoveAll(b =>
-                    b.type >= 1 && b.type <= 21 && !city.bonuses.Contains(GetGoodFromID(b.type))
-                );
+                // 2. CLEAN ILLEGAL BUILDINGS
+                // Using the internal helper to ensure we only remove production buildings (1-21)
+                // that do not match the city's current legal bonuses.
+                int count = city.buildings.RemoveAll(b =>
+                        b.type >= 1 && b.type <= 21 && !city.bonuses.Contains(GetGoodFromID(b.type))
+                    );
 
-                if (removedBuildings > 0)
+                if (count > 0)
                 {
-                    MelonLoader.MelonLogger.Msg($"[Mandate] {city.name}: Removed {removedBuildings} illegal buildings.");
+                    MelonLogger.Msg($"[Mandate] Cleaned {count} illegal buildings from {city.name}.");
                 }
             }
 
-            // Helper to map building ID to Good string (Update this based on game's actual Goods.ALL list)
             public static string GetGoodFromID(int id)
             {
-                if (id < 0 || id >= Goods.ALL.Count) return "";
-                return Goods.ALL[id];
-            }
-        }
-
-        // Reuse your GetGoodFromID helper here
-        private static string GetGoodFromID(int id)
-        {
-            switch (id)
-            {
-                case 1: return "ale";
-                case 2: return "beef";
-                case 3: return "bricks";
-                case 4: return "clay";
-                case 5: return "cloth";
-                case 6: return "fish";
-                case 7: return "grain";
-                case 8: return "honey";
-                case 9: return "iron-bars";
-                case 10: return "logs";
-                case 11: return "lumber";
-                case 12: return "mead";
-                case 13: return "ore";
-                case 14: return "pottery";
-                case 15: return "salt";
-                case 16: return "stone";
-                case 17: return "tar";
-                case 18: return "vegetables";
-                case 19: return "wine";
-                case 20: return "wooden-tools";
-                case 21: return "wool";
-                default: return null;
+                switch (id)
+                {
+                    case 1: return "ale";
+                    case 2: return "beef";
+                    case 3: return "bricks";
+                    case 4: return "clay";
+                    case 5: return "cloth";
+                    case 6: return "fish";
+                    case 7: return "grain";
+                    case 8: return "honey";
+                    case 9: return "iron-bars";
+                    case 10: return "logs";
+                    case 11: return "lumber";
+                    case 12: return "mead";
+                    case 13: return "ore";
+                    case 14: return "pottery";
+                    case 15: return "salt";
+                    case 16: return "stone";
+                    case 17: return "tar";
+                    case 18: return "vegetables";
+                    case 19: return "wine";
+                    case 20: return "wooden-tools";
+                    case 21: return "wool";
+                    default: return null;
+                }
             }
         }
     }
