@@ -20,7 +20,7 @@ The Mayor's AI has been completely rewritten to respect the Mandate:
 ## Installation
 
 1. Ensure you have **MelonLoader** installed for *High Seas, High Profits*.
-2. Download the `Bonus_Only_Businesses.dll`.
+2. Download the `Bonus_Only_Businesses.dll` from here: [Download](https://lexydotzip.itch.io/hshp-bob).
 3. Place the DLL into your game's `Mods` folder.
 4. Launch the game.
 
